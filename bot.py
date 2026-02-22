@@ -77,10 +77,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_user(user)
     username = f"@{user.username}" if user.username else user.first_name
 
-    # Bubble 1
-    await update.message.reply_text(f"Bot by @{OWNER_USERNAME}, Hellow bellow {username}. 🫧")
-
-    # Bubble 2
     markup = InlineKeyboardMarkup([
         [InlineKeyboardButton("🧁 Pilih Absen", callback_data="pilih_absen")],
         [InlineKeyboardButton("🏆 Leaderboard", callback_data="leaderboard_bbc"), 
@@ -88,12 +84,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📜 Konsekuensi", callback_data="cek_konsekuensi")]
     ])
 
+    # Hitung status absen untuk tampilan awal
+    cursor.execute("SELECT COUNT(*) FROM users WHERE senin=1 OR jumat=1 OR minggu=1")
+    done = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM users WHERE senin=0 AND jumat=0 AND minggu=0")
+    belum = cursor.fetchone()[0]
+
     text = f"{get_greeting()}, {username}.\n\n" \
-           f"<b>Broadcast hari ini :</b> -\n" \
-           f"<b>Broadcast 1 pekan :</b> -\n" \
-           f"<i>Broadcast tertinggi : (jadwal kapan, dan berapa)</i> ☁️"
-    
-    await update.message.reply_text(text, parse_mode="HTML", reply_markup=markup)
+           f"<b>Status Absen Pekan Ini:</b>\n" \
+           f"✅ Done: {done} member\n" \
+           f"⛔ Belum: {belum} member\n\n" \
+           f"<i>Semangat terus yaa!</i> ☁️"
+
+    # Logika agar bisa dipanggil dari command /start maupun tombol back
+    if update.message:
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=markup)
+    else:
+        await update.callback_query.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -238,6 +245,23 @@ async def owner_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.commit()
         await context.bot.send_message(target_id, f"kringg, pesan dari master : {reason}.\n\notomatis pengurangan point -1")
 
+async def ubah_poin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID: return
+    
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text("Format: `/poin [ID_USER] [JUMLAH]`\nContoh: `/poin 12345 50` (nambah) atau `/poin 12345 -50` (ngurang)")
+        return
+
+    target_id = context.args[0]
+    jumlah = int(context.args[1])
+
+    cursor.execute("UPDATE users SET points = points + ? WHERE user_id = ?", (jumlah, target_id))
+    db.commit()
+    
+    aksi = "ditambah" if jumlah > 0 else "dikurangi"
+    await update.message.reply_text(f"Poin user {target_id} berhasil {aksi} sebanyak {abs(jumlah)}! ✨")
+    await context.bot.send_message(target_id, f"🎀 Poin kamu telah {aksi} oleh Master sebanyak {abs(jumlah)} poin.")
+    
 async def jawab_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Pastikan hanya Master atau di grup log yang bisa pakai
     if update.effective_chat.id != LOG_GROUP_ID and update.effective_user.id != OWNER_ID:
@@ -253,11 +277,33 @@ async def jawab_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await context.bot.send_message(
             target_id, 
-            f"🎀 **Jawaban dari Master:**\n\n{pesan_master}"
+            f"🎀 - *Jawaban dari Master:*\n\n{pesan_master}"
         )
         await update.message.reply_text(f"Pesan Master sudah terkirim ke {target_id}! ✅")
     except Exception as e:
         await update.message.reply_text(f"Waduh, gagal kirim karena: {e}")
+
+async def broadcast_owner(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID: return
+    
+    pesan = " ".join(context.args)
+    if not pesan: return
+
+    cursor.execute("SELECT user_id FROM users")
+    users = cursor.fetchall()
+    
+    count = 0
+    for u in users:
+        try:
+            await context.bot.send_message(u[0], pesan)
+            count += 1
+        except: continue
+    
+    # Update total broadcast owner di database
+    cursor.execute("UPDATE users SET total_bc = total_bc + 1 WHERE user_id = ?", (OWNER_ID,))
+    db.commit()
+    
+    await update.message.reply_text(f"Berhasil kirim broadcast ke {count} member! 📢")
         
 # ================= APP START =================
 
@@ -266,6 +312,8 @@ def main():
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("jawab", jawab_user))
+    app.add_handler(CommandHandler("poin", ubah_poin))
+    app.add_handler(CommandHandler("bc", broadcast_owner))
     app.add_handler(ChatMemberHandler(track_join, ChatMemberHandler.CHAT_MEMBER))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(CommandHandler(["done", "valid"], owner_done))
