@@ -120,7 +120,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "form_minggu":
         cursor.execute("SELECT value FROM settings WHERE key='keyword'")
         key = cursor.fetchone()[0]
-        await query.message.reply_text(f"Kirim 20 link menfess dengan keyword: <b>{key}</b>", parse_mode="HTML")
+        await query.message.reply_text(f"Kirim 20 link menfess")
         context.user_data['state'] = 'WAIT_MINGGU'
 
     elif query.data == "cek_konsekuensi":
@@ -131,12 +131,16 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "leaderboard_bbc":
         cursor.execute("SELECT username, points FROM users ORDER BY points DESC LIMIT 5")
         rows = cursor.fetchall()
-        text = "🏆 *JUARA CINNA**🏆\n\n"
+        text = "🏆 JUARA CINNA🏆\n\n"
         for i, row in enumerate(rows, 1):
             bonus = " (+50 pts)" if i <=3 else " (+25 pts)"
             text += f"{i}. @{row[0]} — {row[1]} pts{bonus}\n"
         await query.message.reply_text(text)
 
+    elif query.data == "tanya_owner":
+        await query.message.reply_text("Mau tanya apa ke Master? Tulis di bawah ya, nanti Cinna sampaikan! 💌")
+        context.user_data['state'] = 'WAIT_TANYA'
+        
     elif query.data == "back_start":
         await start(update, context)
 
@@ -146,6 +150,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     state = context.user_data.get('state')
 
+    # --- DISINI TEMPATNYA ---
+    if state == 'WAIT_TANYA':
+        text_pesan = update.message.text
+        await context.bot.send_message(
+            LOG_GROUP_ID, 
+            f"💌 *PESAN TANYA-CINNA*\nDari: @{user.username} (ID: `{user.id}`)\nIsi: {text_pesan}\n\n👉 Balas: `/jawab {user.id} [pesan]`"
+        )
+        await update.message.reply_text("Pesanmu sudah Cinna sampaikan ke Master! ✨")
+        context.user_data['state'] = None
+        return
+        
     # --- SENIN LOGIC ---
     if state == 'WAIT_SENIN':
         lines = update.message.text.strip().split("\n")
@@ -223,18 +238,40 @@ async def owner_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.commit()
         await context.bot.send_message(target_id, f"kringg, pesan dari master : {reason}.\n\notomatis pengurangan point -1")
 
+async def jawab_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Pastikan hanya Master atau di grup log yang bisa pakai
+    if update.effective_chat.id != LOG_GROUP_ID and update.effective_user.id != OWNER_ID:
+        return
+
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text("Duh Master, formatnya salah! Pakai: `/jawab [ID] [Pesan]` 🎀")
+        return
+
+    try:
+        target_id = context.args[0]
+        pesan_master = " ".join(context.args[1:])
+        
+        await context.bot.send_message(
+            target_id, 
+            f"🎀 **Jawaban dari Master:**\n\n{pesan_master}"
+        )
+        await update.message.reply_text(f"Pesan Master sudah terkirim ke {target_id}! ✅")
+    except Exception as e:
+        await update.message.reply_text(f"Waduh, gagal kirim karena: {e}")
+        
 # ================= APP START =================
 
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("jawab", jawab_user))
     app.add_handler(ChatMemberHandler(track_join, ChatMemberHandler.CHAT_MEMBER))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(CommandHandler(["done", "valid"], owner_done))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.PHOTO, handle_message))
-
+    
     print("CinnaBot Running... 🩵")
     app.run_polling()
 
