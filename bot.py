@@ -1,112 +1,242 @@
-import telebot
-from telebot import types
-import datetime
+import sqlite3
+import logging
 import re
+import pytz
+from datetime import datetime, timedelta
 
-# --- CONFIGURATION ---
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
+    ChatMemberHandler,
+    CallbackQueryHandler,
+)
+
+# ================= CONFIG =================
 TOKEN = "8557455338:AAEYVbutR1kgm0pyG0u8lf7BL1EtLHhXecw"
-OWNER_ID = 8007886767  # ID @cinnamoroiLi
-LOG_GROUP_ID = -5151128223 
 CHANNEL_USERNAME = "@RekberEloise"
+LOG_GROUP_ID = -5151128223  # ID Grup Done (Owner & Bot)
+OWNER_ID = 8007886767         # ID @cinnamoroiLi
+OWNER_USERNAME = "cinnamoroiLi"
+TIMEZONE = pytz.timezone("Asia/Jakarta")
 
-bot = telebot.TeleBot(TOKEN)
+# ================= DATABASE =================
+db = sqlite3.connect("bot.db", check_same_thread=False)
+cursor = db.cursor()
 
-# Database sederhana (Dalam produksi nyata, gunakan SQLite/MongoDB)
-user_data = {} 
-settings = {"keyword": "mangga", "konsekuensi": "Belum diatur oleh Master."}
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    username TEXT,
+    senin INTEGER DEFAULT 0,
+    jumat INTEGER DEFAULT 0,
+    minggu INTEGER DEFAULT 0,
+    points INTEGER DEFAULT 0,
+    total_absen INTEGER DEFAULT 0
+)
+""")
 
+cursor.execute("CREATE TABLE IF NOT EXISTS used_usernames (username TEXT PRIMARY KEY, used_by INTEGER)")
+cursor.execute("CREATE TABLE IF NOT EXISTS join_logs (username TEXT PRIMARY KEY, join_time TIMESTAMP)")
+cursor.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
+db.commit()
+
+# Init Settings
+cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('keyword', 'mangga')")
+cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('konsekuensi', 'Tebus hukuman dengan post 50 list baru!')")
+db.commit()
+
+# ================= UTIL =================
 def get_greeting():
-    hour = datetime.datetime.now().hour
+    hour = datetime.now(TIMEZONE).hour
     if 5 <= hour < 12: return "Selamat Pagi 🌅"
     elif 12 <= hour < 15: return "Selamat Siang ☀️"
     elif 15 <= hour < 18: return "Selamat Sore ☁️"
     else: return "Selamat Malam 🌙"
 
-# --- HANDLERS ---
+def save_user(user):
+    cursor.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user.id, user.username))
+    db.commit()
 
-@bot.message_handler(commands=['start'])
-def start_handler(message):
-    name = message.from_user.first_name
-    username = f"@{message.from_user.username}" if message.from_user.username else name
-    
+# ================= HANDLERS =================
+
+async def track_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    member = update.chat_member
+    if member.new_chat_member.status == "member":
+        username = member.new_chat_member.user.username
+        if username:
+            cursor.execute("INSERT OR REPLACE INTO join_logs (username, join_time) VALUES (?, ?)",
+                           (username.lower(), datetime.now(TIMEZONE).isoformat()))
+            db.commit()
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    save_user(user)
+    username = f"@{user.username}" if user.username else user.first_name
+
     # Bubble 1
-    bot.send_message(message.chat.id, f"Bot by @cinnamoroiLi, Hellow bellow {username}! 🫧")
-    
+    await update.message.reply_text(f"Bot by @{OWNER_USERNAME}, Hellow bellow {username}. 🫧")
+
     # Bubble 2
-    markup = types.InlineKeyboardMarkup()
-    btn_absen = types.InlineKeyboardButton("✨ Absen Sekarang ✨", callback_data="pilih_absen")
-    btn_bbc = types.InlineKeyboardButton("🏆 Leaderboard", callback_data="leaderboard")
-    btn_tanya = types.InlineKeyboardButton("☁️ Tanya CinnaBot", callback_data="tanya_owner")
-    markup.add(btn_absen)
-    markup.add(btn_bbc, btn_tanya)
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🧁 Pilih Absen", callback_data="pilih_absen")],
+        [InlineKeyboardButton("🏆 Leaderboard", callback_data="leaderboard_bbc"), 
+         InlineKeyboardButton("💌 Tanya Cinna", callback_data="tanya_owner")],
+        [InlineKeyboardButton("📜 Konsekuensi", callback_data="cek_konsekuensi")]
+    ])
 
     text = f"{get_greeting()}, {username}.\n\n" \
            f"<b>Broadcast hari ini :</b> -\n" \
            f"<b>Broadcast 1 pekan :</b> -\n" \
-           f"<i>Broadcast tertinggi : Senin, 150 Absen</i> ☁️"
+           f"<i>Broadcast tertinggi : (jadwal kapan, dan berapa)</i> ☁️"
     
-    bot.send_message(message.chat.id, text, parse_mode="HTML", reply_markup=markup)
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=markup)
 
-@bot.callback_query_handler(func=lambda call: True)
-def callback_listener(call):
-    if call.data == "pilih_absen":
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("Senin: Upsubs 25s", callback_data="absen_senin"))
-        markup.add(types.InlineKeyboardButton("Jumat: Jaseb 50 Lpm", callback_data="absen_jumat"))
-        markup.add(types.InlineKeyboardButton("Minggu: Send mf 20x", callback_data="absen_minggu"))
-        markup.add(types.InlineKeyboardButton("⬅️ Kembali", callback_data="back_home"))
+async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    uid = query.from_user.id
+
+    if query.data == "pilih_absen":
+        markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Absen Senin : Upsubs 25s", callback_data="form_senin")],
+            [InlineKeyboardButton("Absen Jumat : Jaseb 50 Lpm", callback_data="form_jumat")],
+            [InlineKeyboardButton("Absen Minggu : Send mf 20x", callback_data="form_minggu")],
+            [InlineKeyboardButton("⬅️ Back", callback_data="back_start")]
+        ])
+        await query.edit_message_text("Silahkan Pilih Absen, Untuk Reminder 🎀", reply_markup=markup)
+
+    elif query.data == "form_senin":
+        await query.message.reply_text("Silahkan kirim list 25 username @\nContoh:\n1. @user\n2. @user\n...")
+        context.user_data['state'] = 'WAIT_SENIN'
+
+    elif query.data == "form_jumat":
+        await query.message.reply_text("Silahkan kirim screenshoot yang sudah di grid, Master akan mengeceknya! 📸")
+        context.user_data['state'] = 'WAIT_JUMAT'
+
+    elif query.data == "form_minggu":
+        cursor.execute("SELECT value FROM settings WHERE key='keyword'")
+        key = cursor.fetchone()[0]
+        await query.message.reply_text(f"Kirim 20 link menfess dengan keyword: <b>{key}</b>", parse_mode="HTML")
+        context.user_data['state'] = 'WAIT_MINGGU'
+
+    elif query.data == "cek_konsekuensi":
+        cursor.execute("SELECT value FROM settings WHERE key='konsekuensi'")
+        kons = cursor.fetchone()[0]
+        await query.message.reply_text(f"Hukuman telat absen:\n\n{kons} 📑")
+
+    elif query.data == "leaderboard_bbc":
+        cursor.execute("SELECT username, points FROM users ORDER BY points DESC LIMIT 5")
+        rows = cursor.fetchall()
+        text = "🏆 *JUARA CINNA**🏆\n\n"
+        for i, row in enumerate(rows, 1):
+            bonus = " (+50 pts)" if i <=3 else " (+25 pts)"
+            text += f"{i}. @{row[0]} — {row[1]} pts{bonus}\n"
+        await query.message.reply_text(text)
+
+    elif query.data == "back_start":
+        await start(update, context)
+
+# ================= CORE LOGIC =================
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    state = context.user_data.get('state')
+
+    # --- SENIN LOGIC ---
+    if state == 'WAIT_SENIN':
+        lines = update.message.text.strip().split("\n")
+        usernames = [u.strip().lower() for u in lines if "@" in u]
+        errors = []
+
+        if len(usernames) < 25: errors.append("Jumlah username kurang dari 25.")
+        if len(usernames) != len(set(usernames)): errors.append("Ada username double (-2 point).")
         
-        bot.edit_message_text("Silahkan Pilih Absen, Untuk Reminder 🎀", call.message.chat.id, call.message.message_id, reply_markup=markup)
+        for u in usernames:
+            uname = u.replace("@", "").split()[0]
+            cursor.execute("SELECT username FROM used_usernames WHERE username=?", (uname,))
+            if cursor.fetchone(): errors.append(f"{u} sudah pernah digunakan.")
+            
+            cursor.execute("SELECT join_time FROM join_logs WHERE username=?", (uname,))
+            row = cursor.fetchone()
+            if not row: errors.append(f"{u} bukan member baru.")
+            elif datetime.now(TIMEZONE) - datetime.fromisoformat(row[0]) > timedelta(days=1):
+                errors.append(f"{u} join > 24 jam (-1 point).")
 
-    elif call.data == "absen_senin":
-        msg = bot.send_message(call.message.chat.id, "Silahkan kirim list 25 username @\n(Kirim dalam 1 bubble chat ya sayang! 🩵)")
-        bot.register_next_step_handler(msg, process_upsubs)
+        if errors:
+            await update.message.reply_text(f"Aduh 😿 Ada kesalahan:\n\n" + "\n".join(errors))
+            return
 
-    elif call.data == "back_home":
-        start_handler(call.message)
+        # Success Senin
+        points = 50 + (len(usernames) - 25)
+        cursor.execute("UPDATE users SET senin=1, points=points+?, total_absen=total_absen+1 WHERE user_id=?", (points, user.id))
+        for u in usernames:
+            cursor.execute("INSERT INTO used_usernames (username, used_by) VALUES (?, ?)", (u.replace("@",""), user.id))
+        db.commit()
+        await update.message.reply_text(f"Absensi di hari Senin Berhasil! Poin +{points}. Terimakasih! 🩵")
+        context.user_data['state'] = None
 
-# --- LOGIC ABSENSI ---
+    # --- JUMAT LOGIC ---
+    elif state == 'WAIT_JUMAT' and update.message.photo:
+        caption = f"Jaseb Jumat: @{user.username}\nID: `{user.id}`\nMaster reply /done 💭"
+        await context.bot.send_photo(LOG_GROUP_ID, update.message.photo[-1].file_id, caption=caption)
+        await update.message.reply_text("Bukti terkirim! Menunggu Master konfirmasi... 🎀")
+        context.user_data['state'] = None
 
-def process_upsubs(message):
-    # Regex untuk mencari username
-    usernames = re.findall(r'@\w+', message.text)
-    unique_users = set(usernames)
+    # --- MINGGU LOGIC ---
+    elif state == 'WAIT_MINGGU':
+        links = re.findall(r'http[s]?://\S+', update.message.text)
+        cursor.execute("SELECT value FROM settings WHERE key='keyword'")
+        keyword = cursor.fetchone()[0]
+        
+        if len(links) >= 20 and keyword.lower() in update.message.text.lower():
+            cursor.execute("UPDATE users SET minggu=1, total_absen=total_absen+1 WHERE user_id=?", (user.id,))
+            db.commit()
+            await update.message.reply_text(f"Absensi Minggu Berhasil! @{user.username} sudah absen sebanyak {user.id} kali. 🩵")
+        else:
+            await update.message.reply_text("Gagal! Link kurang dari 20 atau keyword salah. ❌")
+        context.user_data['state'] = None
+
+# ================= OWNER COMMANDS =================
+
+async def owner_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != LOG_GROUP_ID: return
+    reply = update.message.reply_to_message
+    if not reply or not reply.caption: return
     
-    if len(usernames) < 25:
-        bot.reply_to(message, "Yahhh, listnya kurang dari 25 nih... 🥺 Coba lagi ya!")
-        return
+    target_id = int(re.search(r'ID: `(\d+)`', reply.caption).group(1))
+    
+    if update.message.text.startswith('/done'):
+        cursor.execute("UPDATE users SET jumat=1, total_absen=total_absen+1 WHERE user_id=?", (target_id,))
+        db.commit()
+        # Notif Ke User
+        text = f"Jaseb Jumat kamu sudah di-done Master! 🩵\n\nJumat: ✅\nMakin rajin ya! 🧁"
+        await context.bot.send_message(target_id, text)
+        await update.message.reply_text("Konfirmasi sukses! ✅")
 
-    # Cek duplikat
-    if len(unique_users) < len(usernames):
-        bot.reply_to(message, f"Ih, ada username double! 😠 Poin kamu -2 ya.")
-        return
+    elif update.message.text.startswith('/valid'):
+        reason = update.message.text.split(',', 1)[1] if ',' in update.message.text else "Gambar buram"
+        cursor.execute("UPDATE users SET points=points-1 WHERE user_id=?", (target_id,))
+        db.commit()
+        await context.bot.send_message(target_id, f"kringg, pesan dari master : {reason}.\n\notomatis pengurangan point -1")
 
-    # Simulasi pengecekan channel (Logic aslinya butuh bot jadi admin di channel)
-    bot.reply_to(message, f"Absensi Senin Berhasil! {len(usernames)} username terdeteksi. Master akan mengeceknya! 🩵")
+# ================= APP START =================
 
-# --- FITUR OWNER ---
+def main():
+    app = ApplicationBuilder().token(TOKEN).build()
+    
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(ChatMemberHandler(track_join, ChatMemberHandler.CHAT_MEMBER))
+    app.add_handler(CallbackQueryHandler(callback_handler))
+    app.add_handler(CommandHandler(["done", "valid"], owner_done))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_message))
 
-@bot.message_handler(commands=['setkeyword'])
-def set_key(message):
-    if message.from_user.id == OWNER_ID:
-        new_key = message.text.split(maxsplit=1)[1]
-        settings['keyword'] = new_key
-        bot.reply_to(message, f"Keyword berhasil diganti jadi: {new_key} 🍭")
+    print("CinnaBot Running... 🩵")
+    app.run_polling()
 
-@bot.message_handler(commands=['done', 'valid'])
-def handle_approval(message):
-    if message.from_user.id == OWNER_ID:
-        # Logika forward dan approval di sini
-        pass
-
-# Fitur Tanya Cinna (Relay)
-@bot.callback_query_handler(func=lambda call: call.data == "tanya_owner")
-def ask_owner(call):
-    msg = bot.send_message(call.message.chat.id, "Mau tanya apa ke Master? Tulis di bawah ya! 💌")
-    bot.register_next_step_handler(msg, forward_to_owner)
-
-def forward_to_owner(message):
-    bot.send_message(OWNER_ID, f"💌 *Pesan dari @{message.from_user.username}:*\n{message.text}")
-    bot.reply_to(message, "Pesanmu sudah terkirim ke Master! Ditunggu ya jawabannya... ✨")
-
-bot.infinity_polling()
+if __name__ == "__main__":
+    main()
