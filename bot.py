@@ -195,17 +195,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     state = context.user_data.get('state')
 
+    # --- 1. TANYA OWNER ---
     if state == 'WAIT_TANYA':
         text_pesan = update.message.text
         await context.bot.send_message(
             LOG_GROUP_ID, 
             f"💌 *PESAN TANYA-CINNA*\nDari: @{user.username} (ID: `{user.id}`)\nIsi: {text_pesan}\n\n👉 Balas: `/jawab {user.id} [pesan]`"
         )
-        await update.message.reply_text("Ditunggu ya, Master lagi baca tuh kayaknya... nanti kalau ada jawaban, Cinna langsung lari ke sini lagi! ✨🩵")
+        await update.message.reply_text("Pesanmu sudah Cinna sampaikan ke Master! ✨")
         context.user_data['state'] = None
         return
         
-    if state == 'WAIT_SENIN':
+    # --- 2. SENIN LOGIC ---
+    elif state == 'WAIT_SENIN':
         lines = update.message.text.strip().split("\n")
         usernames = [u.strip().lower() for u in lines if "@" in u]
         errors = []
@@ -220,7 +222,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             cursor.execute("SELECT join_time FROM join_logs WHERE username=?", (uname,))
             row = cursor.fetchone()
-            # Bot tidak menolak jika data log tidak ada, hanya protes jika ada data > 24 jam
             if row:
                 if datetime.now(TIMEZONE) - datetime.fromisoformat(row[0]) > timedelta(days=1):
                     errors.append(f"{u} join > 24 jam (-1 point).")
@@ -237,12 +238,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Absensi di hari Senin Berhasil! Poin +{points}. Terimakasih! 🩵")
         context.user_data['state'] = None
 
+    # --- 3. JUMAT LOGIC ---
     elif state == 'WAIT_JUMAT' and update.message.photo:
         caption = f"Jaseb Jumat: @{user.username}\nID: `{user.id}`\nMaster reply /done 💭"
         await context.bot.send_photo(LOG_GROUP_ID, update.message.photo[-1].file_id, caption=caption)
         await update.message.reply_text("Bukti terkirim! Menunggu Master konfirmasi... 🎀")
         context.user_data['state'] = None
 
+    # --- 4. MINGGU LOGIC ---
     elif state == 'WAIT_MINGGU':
         text_pesan = update.message.text
         caption = f"Absen Minggu: @{user.username}\nID: `{user.id}`\nIsi: {text_pesan}\n\nMaster reply /done 💭"
@@ -250,13 +253,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Laporan absen Minggu terkirim! Menunggu Master konfirmasi... 🎀")
         context.user_data['state'] = None
 
-elif state == 'WAIT_HUKUMAN':
+    # --- 5. HUKUMAN LOGIC ---
+    elif state == 'WAIT_HUKUMAN':
         text_pesan = update.message.text
-        caption = f"🚨 *LAPORAN HUKUMAN*\nDari: @{user.username}\nID: `{user.id}`\nIsi: {text_pesan}\n\nMaster reply `/hukuman_done` 💭"
+        caption = f"🚨 **LAPORAN HUKUMAN**\nDari: @{user.username}\nID: `{user.id}`\nIsi: {text_pesan}\n\nMaster reply `/hukuman_done` 💭"
         await context.bot.send_message(LOG_GROUP_ID, caption)
         await update.message.reply_text("Laporan hukumanmu sudah Cinna sampaikan ke Master! Semoga cepat dimaafkan ya... 🥺🩵")
         context.user_data['state'] = None
-
+        
 # ================= OWNER COMMANDS =================
 
 async def hukuman_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
