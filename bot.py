@@ -2,6 +2,7 @@ import sqlite3
 import logging
 import re
 import pytz
+import asyncio
 from datetime import datetime, timedelta
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -35,7 +36,8 @@ CREATE TABLE IF NOT EXISTS users (
     jumat INTEGER DEFAULT 0,
     minggu INTEGER DEFAULT 0,
     points INTEGER DEFAULT 0,
-    total_absen INTEGER DEFAULT 0
+    total_absen INTEGER DEFAULT 0,
+    total_bc INTEGER DEFAULT 0
 )
 """)
 
@@ -84,23 +86,46 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📜 Konsekuensi", callback_data="cek_konsekuensi")]
     ])
 
-    # Hitung status absen untuk tampilan awal
     cursor.execute("SELECT COUNT(*) FROM users WHERE senin=1 OR jumat=1 OR minggu=1")
     done = cursor.fetchone()[0]
     cursor.execute("SELECT COUNT(*) FROM users WHERE senin=0 AND jumat=0 AND minggu=0")
     belum = cursor.fetchone()[0]
 
-    text = f"{get_greeting()}, {username}.\n\n" \
+    text = f"Halo Kakak manis! {get_greeting()}, @{username}. Senang banget deh bisa ketemu! 🧁.\n\n" \
            f"<b>Status Absen Pekan Ini:</b>\n" \
-           f"✅ Done: {done} member\n" \
-           f"⛔ Belum: {belum} member\n\n" \
-           f"<i>Semangat terus yaa!</i> ☁️"
+           f"✅ Done: {done}\n" \
+           f"⛔ Belum: {belum}\n\n" \
+           f"<i>Yuk, jangan lupa absen biar Master @{OWNER_USERNAME} nggak sedih! ☁️</i>"
 
-    # Logika agar bisa dipanggil dari command /start maupun tombol back
     if update.message:
         await update.message.reply_text(text, parse_mode="HTML", reply_markup=markup)
     else:
         await update.callback_query.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
+
+async def cek_absen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    cursor.execute("SELECT senin, jumat, minggu, points FROM users WHERE user_id=?", (user.id,))
+    row = cursor.fetchone()
+
+    if not row:
+        await update.message.reply_text("Data kamu belum terdaftar, yuk klik /start dulu! ✨")
+        return
+
+    senin, jumat, minggu, points = row
+    s_status = "✅ Done" if senin else "⛔ Belum"
+    j_status = "✅ Done" if jumat else "⛔ Belum"
+    m_status = "✅ Done" if minggu else "⛔ Belum"
+
+    text = (
+        f"🎀 Status Absen 1 Pekan 🎀\n"
+        f"Nama: @{user.username}\n\n"
+        f"🗓 Senin: {s_status}\n"
+        f"🗓 Jumat: {j_status}\n"
+        f"🗓 Minggu: {m_status}\n\n"
+        f"💰 Total Poin: {points} pts\n\n"
+        f"<i>Jangan lupa absen ya!</i> ☁️"
+    )
+    await update.message.reply_text(text, parse_mode="HTML")
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -114,20 +139,18 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("Absen Minggu : Send mf 20x", callback_data="form_minggu")],
             [InlineKeyboardButton("⬅️ Back", callback_data="back_start")]
         ])
-        await query.edit_message_text("Silahkan Pilih Absen, Untuk Reminder 🎀", reply_markup=markup)
+        await query.edit_message_text("Uwaaa! Semangat banget sih mau absen! 🍬 Cinna suka deh member rajin kayak Kakak. @\Silakan pilih menu absennya di bawah ya, jangan sampai salah kamar lho! 🎀👇", reply_markup=markup)
 
     elif query.data == "form_senin":
-        await query.message.reply_text("Silahkan kirim list 25 username @\nContoh:\n1. @user\n2. @user\n...")
+        await query.message.reply_text("Silahkan kirim list 25 username barunya yaa! Cinna teliti banget lhoo.  @\nContoh:\n1. @user\n2. @user\n...")
         context.user_data['state'] = 'WAIT_SENIN'
 
     elif query.data == "form_jumat":
-        await query.message.reply_text("Silahkan kirim screenshoot yang sudah di grid, Master akan mengeceknya! 📸")
+        await query.message.reply_text("📸 Mana nih foto grid jaseb-nya? \nKirim ke Cinna ya, nanti Cinna kasih unjuk ke Master biar langsung di-done! Ditunggu yaa Kakak sayang~ 🍭")
         context.user_data['state'] = 'WAIT_JUMAT'
 
     elif query.data == "form_minggu":
-        cursor.execute("SELECT value FROM settings WHERE key='keyword'")
-        key = cursor.fetchone()[0]
-        await query.message.reply_text(f"Kirim 20 link menfess")
+        await query.message.reply_text(f"Waktunya laporan Minggu! 💭.\nTulis laporan link menfess Kakak di bawah ya. \n\nNanti Master bakal cek satu-satu ketulusan Kakak, eh maksudnya ketelitian Kakak! 🤭 Semangat!")
         context.user_data['state'] = 'WAIT_MINGGU'
 
     elif query.data == "cek_konsekuensi":
@@ -138,14 +161,14 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "leaderboard_bbc":
         cursor.execute("SELECT username, points FROM users ORDER BY points DESC LIMIT 5")
         rows = cursor.fetchall()
-        text = "🏆 JUARA CINNA🏆\n\n"
+        text = "Tadaaa! Ini dia para juara di hati Cinna (dan Master tentunya)! 🏆✨\n\n"
         for i, row in enumerate(rows, 1):
             bonus = " (+50 pts)" if i <=3 else " (+25 pts)"
             text += f"{i}. @{row[0]} — {row[1]} pts{bonus}\n"
         await query.message.reply_text(text)
 
     elif query.data == "tanya_owner":
-        await query.message.reply_text("Mau tanya apa ke Master? Tulis di bawah ya, nanti Cinna sampaikan! 💌")
+        await query.message.reply_text("Tulis aja pesannya di bawah, nanti Cinna bisikin ke Master pelan-pelan biar langsung dijawab. Tulis di sini ya...")
         context.user_data['state'] = 'WAIT_TANYA'
         
     elif query.data == "back_start":
@@ -157,18 +180,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     state = context.user_data.get('state')
 
-    # --- DISINI TEMPATNYA ---
     if state == 'WAIT_TANYA':
         text_pesan = update.message.text
         await context.bot.send_message(
             LOG_GROUP_ID, 
             f"💌 *PESAN TANYA-CINNA*\nDari: @{user.username} (ID: `{user.id}`)\nIsi: {text_pesan}\n\n👉 Balas: `/jawab {user.id} [pesan]`"
         )
-        await update.message.reply_text("Pesanmu sudah Cinna sampaikan ke Master! ✨")
+        await update.message.reply_text("Ditunggu ya, Master lagi baca tuh kayaknya... nanti kalau ada jawaban, Cinna langsung lari ke sini lagi! ✨🩵")
         context.user_data['state'] = None
         return
         
-    # --- SENIN LOGIC ---
     if state == 'WAIT_SENIN':
         lines = update.message.text.strip().split("\n")
         usernames = [u.strip().lower() for u in lines if "@" in u]
@@ -184,15 +205,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             cursor.execute("SELECT join_time FROM join_logs WHERE username=?", (uname,))
             row = cursor.fetchone()
-            if not row: errors.append(f"{u} bukan member baru.")
-            elif datetime.now(TIMEZONE) - datetime.fromisoformat(row[0]) > timedelta(days=1):
-                errors.append(f"{u} join > 24 jam (-1 point).")
+            # Bot tidak menolak jika data log tidak ada, hanya protes jika ada data > 24 jam
+            if row:
+                if datetime.now(TIMEZONE) - datetime.fromisoformat(row[0]) > timedelta(days=1):
+                    errors.append(f"{u} join > 24 jam (-1 point).")
 
         if errors:
             await update.message.reply_text(f"Aduh 😿 Ada kesalahan:\n\n" + "\n".join(errors))
             return
 
-        # Success Senin
         points = 50 + (len(usernames) - 25)
         cursor.execute("UPDATE users SET senin=1, points=points+?, total_absen=total_absen+1 WHERE user_id=?", (points, user.id))
         for u in usernames:
@@ -201,25 +222,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Absensi di hari Senin Berhasil! Poin +{points}. Terimakasih! 🩵")
         context.user_data['state'] = None
 
-    # --- JUMAT LOGIC ---
     elif state == 'WAIT_JUMAT' and update.message.photo:
         caption = f"Jaseb Jumat: @{user.username}\nID: `{user.id}`\nMaster reply /done 💭"
         await context.bot.send_photo(LOG_GROUP_ID, update.message.photo[-1].file_id, caption=caption)
         await update.message.reply_text("Bukti terkirim! Menunggu Master konfirmasi... 🎀")
         context.user_data['state'] = None
 
-    # --- MINGGU LOGIC ---
     elif state == 'WAIT_MINGGU':
-        links = re.findall(r'http[s]?://\S+', update.message.text)
-        cursor.execute("SELECT value FROM settings WHERE key='keyword'")
-        keyword = cursor.fetchone()[0]
-        
-        if len(links) >= 20 and keyword.lower() in update.message.text.lower():
-            cursor.execute("UPDATE users SET minggu=1, total_absen=total_absen+1 WHERE user_id=?", (user.id,))
-            db.commit()
-            await update.message.reply_text(f"Absensi Minggu Berhasil! @{user.username} sudah absen sebanyak {user.id} kali. 🩵")
-        else:
-            await update.message.reply_text("Gagal! Link kurang dari 20 atau keyword salah. ❌")
+        text_pesan = update.message.text
+        caption = f"Absen Minggu: @{user.username}\nID: `{user.id}`\nIsi: {text_pesan}\n\nMaster reply /done 💭"
+        await context.bot.send_message(LOG_GROUP_ID, caption)
+        await update.message.reply_text("Laporan absen Minggu terkirim! Menunggu Master konfirmasi... 🎀")
         context.user_data['state'] = None
 
 # ================= OWNER COMMANDS =================
@@ -227,90 +240,92 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def owner_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != LOG_GROUP_ID: return
     reply = update.message.reply_to_message
-    if not reply or not reply.caption: return
+    if not reply or (not reply.caption and not reply.text): return
     
-    target_id = int(re.search(r'ID: `(\d+)`', reply.caption).group(1))
+    source = reply.caption if reply.caption else reply.text
+    match = re.search(r'ID: `(\d+)`', source)
+    if not match: return
+    target_id = int(match.group(1))
     
     if update.message.text.startswith('/done'):
-        cursor.execute("UPDATE users SET jumat=1, total_absen=total_absen+1 WHERE user_id=?", (target_id,))
+        # Cek apakah ini absen Jumat atau Minggu dari teks caption/pesan
+        hari = "Minggu" if "Minggu" in source else "Jumat"
+        db_col = "minggu" if "Minggu" in source else "jumat"
+        
+        cursor.execute(f"UPDATE users SET {db_col}=1, total_absen=total_absen+1 WHERE user_id=?", (target_id,))
         db.commit()
-        # Notif Ke User
-        text = f"Jaseb Jumat kamu sudah di-done Master! 🩵\n\nJumat: ✅\nMakin rajin ya! 🧁"
-        await context.bot.send_message(target_id, text)
+        await context.bot.send_message(target_id, f"Absen {hari} kamu sudah di-done Master! 🩵Horeee! Absen Kakak sudah masuk ke buku catatan Cinna! ✅\n\nMakin rajin ya! 🧁")
         await update.message.reply_text("Konfirmasi sukses! ✅")
 
     elif update.message.text.startswith('/valid'):
-        reason = update.message.text.split(',', 1)[1] if ',' in update.message.text else "Gambar buram"
+        reason = update.message.text.split(',', 1)[1] if ',' in update.message.text else "Data tidak valid"
         cursor.execute("UPDATE users SET points=points-1 WHERE user_id=?", (target_id,))
         db.commit()
-        await context.bot.send_message(target_id, f"kringg, pesan dari master : {reason}.\n\notomatis pengurangan point -1")
+        await context.bot.send_message(target_id, f"Kringg, pesan dari Master: {reason}.\n\nOtomatis pengurangan point -1")
 
 async def ubah_poin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID: return
-    
     if not context.args or len(context.args) < 2:
-        await update.message.reply_text("Format: `/poin [ID_USER] [JUMLAH]`\nContoh: `/poin 12345 50` (nambah) atau `/poin 12345 -50` (ngurang)")
+        await update.message.reply_text("Format: `/poin [ID_USER] [JUMLAH]`")
         return
-
     target_id = context.args[0]
     jumlah = int(context.args[1])
-
     cursor.execute("UPDATE users SET points = points + ? WHERE user_id = ?", (jumlah, target_id))
     db.commit()
-    
     aksi = "ditambah" if jumlah > 0 else "dikurangi"
     await update.message.reply_text(f"Poin user {target_id} berhasil {aksi} sebanyak {abs(jumlah)}! ✨")
     await context.bot.send_message(target_id, f"🎀 Poin kamu telah {aksi} oleh Master sebanyak {abs(jumlah)} poin.")
     
 async def jawab_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Pastikan hanya Master atau di grup log yang bisa pakai
-    if update.effective_chat.id != LOG_GROUP_ID and update.effective_user.id != OWNER_ID:
-        return
-
+    if update.effective_chat.id != LOG_GROUP_ID and update.effective_user.id != OWNER_ID: return
     if not context.args or len(context.args) < 2:
-        await update.message.reply_text("Duh Master, formatnya salah! Pakai: `/jawab [ID] [Pesan]` 🎀")
+        await update.message.reply_text("Format: `/jawab [ID] [Pesan]`")
         return
-
     try:
         target_id = context.args[0]
         pesan_master = " ".join(context.args[1:])
-        
-        await context.bot.send_message(
-            target_id, 
-            f"🎀 - *Jawaban dari Master:*\n\n{pesan_master}"
-        )
+        await context.bot.send_message(target_id, f"🎀 - *Jawaban dari Master:*\n\n{pesan_master}")
         await update.message.reply_text(f"Pesan Master sudah terkirim ke {target_id}! ✅")
     except Exception as e:
-        await update.message.reply_text(f"Waduh, gagal kirim karena: {e}")
+        await update.message.reply_text(f"Gagal kirim: {e}")
 
 async def broadcast_owner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID: return
-    
     pesan = " ".join(context.args)
     if not pesan: return
-
     cursor.execute("SELECT user_id FROM users")
     users = cursor.fetchall()
-    
     count = 0
     for u in users:
         try:
             await context.bot.send_message(u[0], pesan)
             count += 1
         except: continue
-    
-    # Update total broadcast owner di database
     cursor.execute("UPDATE users SET total_bc = total_bc + 1 WHERE user_id = ?", (OWNER_ID,))
     db.commit()
-    
-    await update.message.reply_text(f"Berhasil kirim broadcast ke {count} member! 📢")
-        
+    await update.message.reply_text(f"Berhasil broadcast ke {count} member! 📢")
+
 # ================= APP START =================
+
+async def set_commands(app):
+    commands = [
+        ("start", "Memulai bot disini ya! ✨"),
+        ("cek", "List absen 1 pekan kamu 📑")
+    ]
+    await app.bot.set_my_commands(commands)
 
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
     
+    import asyncio
+    try:
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(set_commands(app))
+    except:
+        pass
+    
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("cek", cek_absen))
     app.add_handler(CommandHandler("jawab", jawab_user))
     app.add_handler(CommandHandler("poin", ubah_poin))
     app.add_handler(CommandHandler("bc", broadcast_owner))
