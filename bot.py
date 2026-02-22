@@ -139,25 +139,40 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("Absen Minggu : Send mf 20x", callback_data="form_minggu")],
             [InlineKeyboardButton("⬅️ Back", callback_data="back_start")]
         ])
-        await query.edit_message_text("Uwaaa! Semangat banget sih mau absen! 🍬 Cinna suka deh member rajin kayak Kakak. @\Silakan pilih menu absennya di bawah ya, jangan sampai salah kamar lho! 🎀👇", reply_markup=markup)
+        await query.edit_message_text("Uwaaa! Semangat banget sih mau absen! 🍬 Cinna suka deh member rajin kayak Kakak. \nSilakan pilih menu absennya di bawah ya, jangan sampai salah kamar lho! 🎀👇", reply_markup=markup)
 
     elif query.data == "form_senin":
-        await query.message.reply_text("Silahkan kirim list 25 username barunya yaa! Cinna teliti banget lhoo.  @\nContoh:\n1. @user\n2. @user\n...")
+        if datetime.now(TIMEZONE).weekday() != 0: # 0 = Senin
+            await query.message.reply_text("Maaf ya Kakak sayang, absen Senin cuma bisa dilakukan di hari Senin! ✨ Silahkan balik lagi nanti yaa~ 🧁")
+            return
+        await query.message.reply_text("Silahkan kirim list 25 username barunya yaa! Cinna teliti banget lhoo. @\nContoh:\n1. @user\n2. @user\n...")
         context.user_data['state'] = 'WAIT_SENIN'
 
     elif query.data == "form_jumat":
+        if datetime.now(TIMEZONE).weekday() != 4: # 4 = Jumat
+            await query.message.reply_text("Eits! Belum waktunya absen Jumat lho. Balik lagi pas hari Jumat ya manis! 📸🍭")
+            return
         await query.message.reply_text("📸 Mana nih foto grid jaseb-nya? \nKirim ke Cinna ya, nanti Cinna kasih unjuk ke Master biar langsung di-done! Ditunggu yaa Kakak sayang~ 🍭")
         context.user_data['state'] = 'WAIT_JUMAT'
 
     elif query.data == "form_minggu":
-        await query.message.reply_text(f"Waktunya laporan Minggu! 💭.\nTulis laporan link menfess Kakak di bawah ya. \n\nNanti Master bakal cek satu-satu ketulusan Kakak, eh maksudnya ketelitian Kakak! 🤭 Semangat!")
+        if datetime.now(TIMEZONE).weekday() != 6: # 6 = Minggu
+            await query.message.reply_text("Sabar ya Kak, absen Minggu cuma dibuka pas hari Minggu aja! 🎀 Biar Master istirahat dulu~ ☁️")
+            return
+        await query.message.reply_text("Waktunya laporan Minggu! 💭\nTulis laporan link menfess Kakak di bawah ya. \n\nNanti Master bakal cek satu-satu ketulusan Kakak! 🤭 Semangat!")
         context.user_data['state'] = 'WAIT_MINGGU'
 
     elif query.data == "cek_konsekuensi":
         cursor.execute("SELECT value FROM settings WHERE key='konsekuensi'")
         kons = cursor.fetchone()[0]
-        await query.message.reply_text(f"Hukuman telat absen:\n\n{kons} 📑")
+        # Tambahan tombol agar member bisa langsung lapor hukuman
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton("💌 Lapor Hukuman", callback_data="form_hukuman")]])
+        await query.message.reply_text(f"Hukuman telat absen:\n\n{kons} 📑\n\nSudah selesai tebus hukuman? Klik tombol di bawah ya!", reply_markup=markup)
 
+    elif query.data == "form_hukuman":
+        await query.message.reply_text("Silahkan kirim bukti/laporan hukuman Kakak di sini ya! Nanti Cinna lapor Master biar dimaafkan lho~ 🥺🩵")
+        context.user_data['state'] = 'WAIT_HUKUMAN'
+        
     elif query.data == "leaderboard_bbc":
         cursor.execute("SELECT username, points FROM users ORDER BY points DESC LIMIT 5")
         rows = cursor.fetchall()
@@ -235,17 +250,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Laporan absen Minggu terkirim! Menunggu Master konfirmasi... 🎀")
         context.user_data['state'] = None
 
+elif state == 'WAIT_HUKUMAN':
+        text_pesan = update.message.text
+        caption = f"🚨 *LAPORAN HUKUMAN*\nDari: @{user.username}\nID: `{user.id}`\nIsi: {text_pesan}\n\nMaster reply `/hukuman_done` 💭"
+        await context.bot.send_message(LOG_GROUP_ID, caption)
+        await update.message.reply_text("Laporan hukumanmu sudah Cinna sampaikan ke Master! Semoga cepat dimaafkan ya... 🥺🩵")
+        context.user_data['state'] = None
+
 # ================= OWNER COMMANDS =================
 
-async def owner_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def hukuman_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != LOG_GROUP_ID: return
     reply = update.message.reply_to_message
     if not reply or (not reply.caption and not reply.text): return
-    
+        
     source = reply.caption if reply.caption else reply.text
     match = re.search(r'ID: `(\d+)`', source)
     if not match: return
     target_id = int(match.group(1))
+
+    # Kirim notif ke member tanpa nambah poin
+    await context.bot.send_message(target_id, "🩵 Hukuman kamu sudah diterima oleh Master! Status kamu sekarang sudah aman, tapi poin tidak bertambah ya! 😾")
+    await update.message.reply_text("Hukuman diverifikasi Master! ✅")
     
     if update.message.text.startswith('/done'):
         # Cek apakah ini absen Jumat atau Minggu dari teks caption/pesan
@@ -334,6 +360,7 @@ def main():
     app.add_handler(CommandHandler(["done", "valid"], owner_done))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.PHOTO, handle_message))
+    app.add_handler(CommandHandler("hukuman_done", hukuman_done))
     
     print("CinnaBot Running... 🩵")
     app.run_polling()
